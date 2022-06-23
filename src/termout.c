@@ -1,5 +1,5 @@
 // termout.c (part of mintty)
-// Copyright 2008-12 Andy Koppe, 2017-20 Thomas Wolff
+// Copyright 2008-22 Andy Koppe, 2017-22 Thomas Wolff
 // Adapted from code from PuTTY-0.60 by Simon Tatham and team.
 // Licensed under the terms of the GNU General Public License v3 or later.
 
@@ -797,6 +797,10 @@ write_char(wchar c, int width)
     if (term.lrmargmode)
       line->lattr &= ~LATTR_MODE;
 #endif
+    if (term.curs.rewrap_on_resize)
+      line->lattr |= LATTR_REWRAP;
+    else
+      line->lattr &= ~LATTR_REWRAP;
     if (!(line->lattr & LATTR_WRAPCONTD))
       line->lattr = (line->lattr & ~LATTR_BIDIMASK) | curs->bidimode;
     //TODO: if changed, propagate mode onto paragraph
@@ -1141,12 +1145,10 @@ write_ucschar(wchar hwc, wchar wc, int width)
 static void
 write_error(void)
 {
-  // Write one of REPLACEMENT CHARACTER or, if that does not exist,
-  // MEDIUM SHADE which looks appropriately erroneous.
-  wchar errch = 0xFFFD;
-  win_check_glyphs(&errch, 1, term.curs.attr.attr);
-  if (!errch)
-    errch = 0x2592;
+  // Write one of REPLACEMENT CHARACTER, MEDIUM SHADE, or other 
+  // replacement character as exists in the font and 
+  // which looks appropriately erroneous. Could be made configurable.
+  wchar errch = get_errch(W("�▒¤¿?"), term.curs.attr.attr);
   write_char(errch, 1);
 }
 
@@ -1211,7 +1213,7 @@ tek_esc(char c)
     when CTRL('O'):   /* LS0: Locking-shift zero */
       tek_alt(false);
     when CTRL('W'):   /* ETB: Make Copy */
-      term_save_image();
+      term_save_image(false);
       tek_bypass = false;
       tek_gin_fin();
     when CTRL('X'):   /* CAN: Set Bypass */
@@ -1457,7 +1459,7 @@ do_vt52_colour(bool fg, uchar c)
   }
   else {
     term.curs.attr.attr &= ~ATTR_BGMASK;
-    term.curs.attr.attr |= ((c & 0xF) + ANSI0) << ATTR_BGSHIFT;
+    term.curs.attr.attr |= ((c & 0xF) + BG_ANSI0) << ATTR_BGSHIFT;
   }
 }
 
@@ -1885,10 +1887,10 @@ do_sgr(void)
         attr.attr |= ATTR_DEFFG;
       when 40 ... 47: /* background */
         attr.attr &= ~ATTR_BGMASK;
-        attr.attr |= (term.csi_argv[i] - 40 + ANSI0) << ATTR_BGSHIFT;
+        attr.attr |= (term.csi_argv[i] - 40 + BG_ANSI0) << ATTR_BGSHIFT;
       when 100 ... 107: /* bright background */
         attr.attr &= ~ATTR_BGMASK;
-        attr.attr |= ((term.csi_argv[i] - 100 + 8 + ANSI0) << ATTR_BGSHIFT);
+        attr.attr |= ((term.csi_argv[i] - 100 + 8 + BG_ANSI0) << ATTR_BGSHIFT);
       when 48: /* palette/true-colour background */
         if (i + 2 < argc && term.csi_argv[i + 1] == 5) {
           // set background to palette colour
@@ -2039,10 +2041,11 @@ set_modes(bool state)
             move(0, 0, 0);
         when 7:  /* DECAWM: auto wrap */
           term.autowrap = state;
-          term.curs.wrapnext = false;
+          if (!state)
+            term.curs.wrapnext = false;
         when 45:  /* xterm: reverse (auto) wraparound */
           term.rev_wrap = state;
-          term.curs.wrapnext = false;
+          //term.curs.wrapnext = false;
         when 8:  /* DECARM: auto key repeat */
           term.auto_repeat = state;
         when 9:  /* X10_MOUSE */
@@ -2220,6 +2223,8 @@ set_modes(bool state)
             do_update();
             usleep(1000);  // flush update
           }
+        when 2027:
+          term.curs.rewrap_on_resize = state;
       }
     }
     else { /* SM/RM: set/reset mode */
@@ -2379,6 +2384,8 @@ get_mode(bool privatemode, int arg)
         return 2 - !!(term.curs.bidimode & LATTR_BOXMIRROR);
       when 2501: /* bidi direction auto-detection */
         return 2 - !(term.curs.bidimode & LATTR_BIDISEL);
+      when 2027:
+        return 2 - term.curs.rewrap_on_resize;
       otherwise:
         return 0;
     }
@@ -2767,6 +2774,11 @@ do_csi(uchar c)
         bool below = arg0 == 0 || arg0 == 2;
         term_erase(term.esc_mod | term.iso_guarded_area, false, above, below);
       }
+#ifdef debug_selection
+    when CPAIR('!', 'J'):
+      if (arg0 == 3)
+        term_select_all();
+#endif
     when 'K' or CPAIR('?', 'K'):  /* EL/DECSEL: (selective) erase in line */
       if (arg0 <= 2) {
         bool right = arg0 == 0 || arg0 == 2;
@@ -2926,7 +2938,7 @@ do_csi(uchar c)
       }
 #endif
       else if (arg0 == 12 && !term.esc_mod) {
-        term_save_image();
+        term_save_image(false);
       }
       else if (arg0 == 0 && !term.esc_mod) {
         print_screen();
@@ -3275,7 +3287,7 @@ do_csi(uchar c)
                    ac = (term.csi_argv[i] - 90 + 8 + ANSI0) << ATTR_FGSHIFT;
           when 100 ... 107:
                    a2 |= ATTR_BGMASK;
-                   ac = (term.csi_argv[i] - 100 + 8 + ANSI0) << ATTR_BGSHIFT;
+                   ac = (term.csi_argv[i] - 100 + 8 + BG_ANSI0) << ATTR_BGSHIFT;
           when 39: a2 |= ATTR_FGMASK;
                    ac = ATTR_DEFFG;
           when 49: a2 |= ATTR_BGMASK;
@@ -3578,7 +3590,7 @@ do_dcs(void)
       }
 
       short left = term.curs.x;
-      short top = term.virtuallines + (term.sixel_display ? 0: term.curs.y);
+      short top = term.sixel_display ? 0: term.curs.y;
       int width = (st->image.width -1 ) / st->grid_width + 1;
       int height = (st->image.height -1 ) / st->grid_height + 1;
       int pixelwidth = st->image.width;
@@ -3829,6 +3841,19 @@ do_dcs(void)
   }
 }
 
+static string
+osc_fini(void)
+{
+  return term.state == CMD_ESCAPE ? "\e\\" : "\a";
+}
+
+static void
+print_osc_colour(colour c)
+{
+  child_printf(";rgb:%04x/%04x/%04x",
+               red(c) * 0x101, green(c) * 0x101, blue(c) * 0x101);
+}
+
 static void
 do_colour_osc(bool has_index_arg, uint i, bool reset)
 {
@@ -3881,13 +3906,11 @@ do_osc_control:
   else if (reset)
     win_set_colour(i, (colour)-1);
   else if (!strcmp(s, "?")) {
-    child_printf("\e]%u;", osc_num);
+    child_printf("\e]%u", osc_num);
     if (has_index_arg)
-      child_printf("%u;", index);
-    c = i < COLOUR_NUM ? colours[i] : 0;  // should not be affected by rvideo
-    char * osc_fini = term.state == CMD_ESCAPE ? "\e\\" : "\a";
-    child_printf("rgb:%04x/%04x/%04x%s",
-                 red(c) * 0x101, green(c) * 0x101, blue(c) * 0x101, osc_fini);
+      child_printf(";%u", index);
+    print_osc_colour(colours[i]);
+    child_printf("%s", osc_fini());
   }
   else if (parse_colour(s, &c))
     win_set_colour(i, c);
@@ -3921,6 +3944,57 @@ do_osc_control:
       }
     }
     goto do_osc_control;
+  }
+}
+
+/*
+ * OSC 7704: Control foreground and background variants of the 16 ANSI colours
+ * independently of the first 16 slots in the xterm256 palette.
+ */
+static void
+do_ansi_colour_osc(void)
+{
+  char *s = term.cmd_buf;
+  uint i;
+  int len = 0;
+
+  // Parse colour index and check it's in range.
+  sscanf(s, "%u;%n", &i, &len);
+  if (!len || i >= 16)
+    return;
+
+  s += len;
+
+  if (!strcmp(s, "?")) {
+    // Just a question mark: Report colour.
+    // Show background variant only if different.
+    colour fg = colours[ANSI0 + i], bg = colours[BG_ANSI0 + i];
+    child_printf("\e]%u", term.cmd_num);
+    print_osc_colour(fg);
+    if (fg != bg)
+      print_osc_colour(bg);
+    child_printf("%s", osc_fini());
+  }
+  else {
+    char *sep = strchr(s, ';');
+    if (!sep) {
+      // One value: Set foreground and background to the same.
+      // Reset both when empty.
+      colour c = -1;
+      if (!*s || parse_colour(s, &c)) {
+        win_set_colour(ANSI0 + i, c);
+        win_set_colour(BG_ANSI0 + i, c);
+      }
+    }
+    else {
+      // Two values: Set foreground and background separately.
+      // Reset empty values.
+      colour fg = -1, bg = -1;
+      if (s == sep || parse_colour(s, &fg))
+        win_set_colour(ANSI0 + i, fg);
+      if (!sep[1] || parse_colour(&sep[1], &bg))
+        win_set_colour(BG_ANSI0 + i, bg);
+    }
   }
 }
 
@@ -3975,7 +4049,6 @@ do_cmd(void)
   char *s = term.cmd_buf;
   s[term.cmd_len] = 0;
   //printf("OSC %d <%s> %s\n", term.cmd_num, s, term.state == CMD_ESCAPE ? "ST" : "BEL");
-  char * osc_fini = term.state == CMD_ESCAPE ? "\e\\" : "\a";
 
   if (*cfg.suppress_osc && contains(cfg.suppress_osc, term.cmd_num))
     // skip suppressed OSC command
@@ -4033,11 +4106,13 @@ do_cmd(void)
         child_set_fork_dir(s);
     when 701:  // Set/get locale (from urxvt).
       if (!strcmp(s, "?"))
-        child_printf("\e]701;%s%s", cs_get_locale(), osc_fini);
+        child_printf("\e]701;%s%s", cs_get_locale(), osc_fini());
       else
         cs_set_locale(s);
     when 7721:  // Copy window title to clipboard.
       win_copy_title();
+    when 7704:  // Change ANSI foreground/background colours.
+      do_ansi_colour_osc();
     when 7773: {  // Change icon.
       uint icon_index = 0;
       char *comma = strrchr(s, ',');
@@ -4053,7 +4128,7 @@ do_cmd(void)
     }
     when 7770:  // Change font size.
       if (!strcmp(s, "?"))
-        child_printf("\e]7770;%u%s", win_get_font_size(), osc_fini);
+        child_printf("\e]7770;%u%s", win_get_font_size(), osc_fini());
       else {
         char *end;
         int i = strtol(s, &end, 10);
@@ -4066,7 +4141,7 @@ do_cmd(void)
       }
     when 7777:  // Change font and window size.
       if (!strcmp(s, "?"))
-        child_printf("\e]7777;%u%s", win_get_font_size(), osc_fini);
+        child_printf("\e]7777;%u%s", win_get_font_size(), osc_fini());
       else {
         char *end;
         int i = strtol(s, &end, 10);
@@ -4095,7 +4170,7 @@ do_cmd(void)
           s += sprintf(s, "%u", wcs[i]);
       }
       *s = 0;
-      child_printf("\e]7771;!%s%s", term.cmd_buf, osc_fini);
+      child_printf("\e]7771;!%s%s", term.cmd_buf, osc_fini());
     }
     when 77119: {  // Indic and Extra characters wide handling
       int what = atoi(s);
@@ -4116,11 +4191,11 @@ do_cmd(void)
         uint ff = (term.curs.attr.attr & FONTFAM_MASK) >> ATTR_FONTFAM_SHIFT;
         if (!strcmp(s, "?")) {
           char * fn = cs__wcstombs(win_get_font(ff) ?: W(""));
-          child_printf("\e]50;%s%s", fn, osc_fini);
+          child_printf("\e]50;%s%s", fn, osc_fini());
           free(fn);
         }
         else {
-          if (ff < lengthof(cfg.fontfams) - 1) {
+          if (ff <= 10) {  // also support changing alternative fonts 1..10
             wstring wfont = cs__mbstowcs(s);  // let this leak...
             win_change_font(ff, wfont);
           }
@@ -4282,7 +4357,7 @@ do_cmd(void)
           // OK
           imglist * img;
           short left = term.curs.x;
-          short top = term.virtuallines + term.curs.y;
+          short top = term.curs.y;
           if (winimg_new(&img, name, data, datalen, left, top, width, height, pixelwidth, pixelheight, pAR, crop_x, crop_y, crop_width, crop_height, term.curs.attr.attr & (ATTR_BLINK | ATTR_BLINK2))) {
             fill_image_space(img);
 

@@ -180,6 +180,18 @@ and Block Elements (U+2580-U+259F). Others may be added in future versions.
 Note: SPD is a deprecated fun feature.
 
 
+## Reflow / Rewrap / Line rebreaking on resize ##
+
+Mintty supports reflow of wrapped lines if the terminal is resized and its 
+width is changed. This feature, applicable with setting `RewrapOnResize`, 
+can be disabled per line, usable for example for prompt lines.
+
+| **sequence**  | **rewrap on resize** |
+|:--------------|:---------------------|
+| `^[[?2027l`   | disabled             |
+| `^[[?2027h`   | enabled (default)    |
+
+
 ## Scrollbar hiding ##
 
 These sequences can be used to hide or show the scrollbar, whereby the window size remains the same but the number of character columns is changed to account for the width of the scrollbar. If the scrollbar is disabled in the options, it will always remain hidden.
@@ -724,6 +736,38 @@ a mintty resource directory; supported file types are .cur, .ico, .ani.
 | **sequence**          |
 |:----------------------|
 | `^[]22;`_pointer_`^G` |
+
+
+## ANSI colours ##
+
+The following _OSC_ sequences can be used to set or query the foreground and
+background variants of the ANSI colours.
+
+| **sequence**                        | ** effect **                         |
+|:------------------------------------|:-------------------------------------|
+| `^[]7704;`_index_`;`_colour_`^G`    | set fg and bg variants to same value |
+| `^[]7704;`_index_`;`_fg_`;`_bg_`^G` | set fg and bg to separate values     |
+| `^[]7704;`_index_`;?^G`             | query current values                 |
+
+The _index_ argument has to be in range 0 to 15.
+
+The colour values can be comma-separated decimal triples such as `255,85,0`,
+X11 colour names, or hexadecimal colour specifications such as `#`_RRGGBB_,
+`rgb:`_RR_`/`_GG_`/`_BB_, `rgb:`_RRRR_`/`_GGGG_`/`_BBBB_,
+`cmy:`_C_`.`_C_`/`_M_`.`_M_`/`_Y_`.`_Y_ or
+`cmyk:`_C_`.`_C_`/`_M_`.`_M_`/`_Y_`.`_Y_`/`_K_`.`_K_.
+
+If a colour value is left empty, it is reset to the value in the mintty
+configuration. Invalid values are ignored.
+
+The query sequence replies with the single-value sequence if the current values
+for the foreground and background variants are the same, and with the two-value
+sequence otherwise.
+
+Note: Unlike the xterm-compatible sequence OSC 4, which sets palette colours 
+including ANSI colours, OSC 7704 can be used to change ANSI colours only, 
+leaving the associated palette colours 0..15 unchanged, so you could 
+select different colours with SGR 30..37 etc distinct from SGR 38:5 etc.
 
 
 ## Printing and screen dump ##
